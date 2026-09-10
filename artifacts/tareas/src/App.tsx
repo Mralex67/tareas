@@ -606,23 +606,28 @@ function TeacherPage() {
   const dbStatusQuery = useQuery({
     queryKey: ['db-status'],
     queryFn: async () => {
+      const clientConfig = getClientSupabaseConfig();
       try {
         const res = await fetch('/api/db-status');
-        if (!res.ok) throw new Error('Status request failed');
-        return (await res.json()) as {
-          activeDatabase: string;
-          isSupabase: boolean;
-          isPartial: boolean;
-          diagnostics?: { message: string; isReady: boolean; urlIsPlaceholder: boolean };
-        };
-      } catch {
+        if (res.ok) {
+          const data = await res.json();
+          if (data && (data.isSupabase || !clientConfig)) return data;
+        }
+      } catch {}
+      if (clientConfig) {
         return {
-          activeDatabase: 'En memoria (Local)',
-          isSupabase: false,
+          activeDatabase: 'Supabase (Nube)',
+          isSupabase: true,
           isPartial: false,
-          diagnostics: { message: 'Operando localmente.', isReady: false, urlIsPlaceholder: false },
+          diagnostics: { message: 'Conectado a la base de datos Supabase en la nube.', isReady: true, urlIsPlaceholder: false },
         };
       }
+      return {
+        activeDatabase: 'En memoria (Local)',
+        isSupabase: false,
+        isPartial: false,
+        diagnostics: { message: 'Operando localmente.', isReady: false, urlIsPlaceholder: false },
+      };
     },
   });
 

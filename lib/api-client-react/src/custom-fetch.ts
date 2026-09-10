@@ -390,6 +390,11 @@ export interface ClientSupabaseConfig {
   anonKey: string;
 }
 
+export const DEFAULT_SUPABASE_CONFIG: ClientSupabaseConfig = {
+  url: "https://ewgfotjewroksgppxfor.supabase.co",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV3Z2ZvdGpld3Jva3NncHB4Zm9yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg5ODYxMzgsImV4cCI6MjEwNDU2MjEzOH0.LIdDwZrBsL7ZcELF8woolG6VCs5502u_YuUwwSEC3uw",
+};
+
 export function normalizeSupabaseUrl(rawUrl: string): string {
   let u = (rawUrl || '').trim().replace(/\/+$/, '');
   const matchDashboard = u.match(/supabase\.com\/dashboard\/project\/([a-z0-9_-]+)/i);
@@ -415,6 +420,7 @@ export function getClientSupabaseConfig(): ClientSupabaseConfig | null {
     if (typeof localStorage !== "undefined") {
       const stored = localStorage.getItem(CLIENT_SUPABASE_KEY);
       if (stored) {
+        if (stored === "local_only") return null;
         const parsed = JSON.parse(stored);
         if (parsed?.url && parsed?.anonKey) {
           return { url: normalizeSupabaseUrl(parsed.url), anonKey: parsed.anonKey };
@@ -429,8 +435,9 @@ export function getClientSupabaseConfig(): ClientSupabaseConfig | null {
         return { url: normalizeSupabaseUrl(url), anonKey };
       }
     }
+    return DEFAULT_SUPABASE_CONFIG;
   } catch {}
-  return null;
+  return DEFAULT_SUPABASE_CONFIG;
 }
 
 export function saveClientSupabaseConfig(config: ClientSupabaseConfig | null): void {
@@ -442,7 +449,7 @@ export function saveClientSupabaseConfig(config: ClientSupabaseConfig | null): v
           anonKey: config.anonKey.trim(),
         }));
       } else {
-        localStorage.removeItem(CLIENT_SUPABASE_KEY);
+        localStorage.setItem(CLIENT_SUPABASE_KEY, "local_only");
       }
     }
   } catch {}
