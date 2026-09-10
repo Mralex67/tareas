@@ -365,7 +365,7 @@ export async function customFetch<T = unknown>(
 
     if (!response.ok) {
       if (response.status === 404 && requestInfo.url.includes("/api/")) {
-        const fallback = handleStaticFallback(requestInfo.url, method, typeof init.body === "string" ? init.body : undefined);
+        const fallback = await handleStaticFallback(requestInfo.url, method, typeof init.body === "string" ? init.body : undefined);
         if (fallback !== null) return fallback as T;
       }
       const errorData = await parseErrorBody(response, method);
@@ -375,7 +375,7 @@ export async function customFetch<T = unknown>(
     return (await parseSuccessBody(response, responseType, requestInfo)) as T;
   } catch (err) {
     if (requestInfo.url.includes("/api/")) {
-      const fallback = handleStaticFallback(requestInfo.url, method, typeof init.body === "string" ? init.body : undefined);
+      const fallback = await handleStaticFallback(requestInfo.url, method, typeof init.body === "string" ? init.body : undefined);
       if (fallback !== null) return fallback as T;
     }
     throw err;
@@ -383,6 +383,46 @@ export async function customFetch<T = unknown>(
 }
 
 const CLIENT_TASKS_KEY = "tareas.local_tasks_data";
+const CLIENT_SUPABASE_KEY = "tareas.supabase_client_config";
+
+export interface ClientSupabaseConfig {
+  url: string;
+  anonKey: string;
+}
+
+export function getClientSupabaseConfig(): ClientSupabaseConfig | null {
+  try {
+    if (typeof localStorage !== "undefined") {
+      const stored = localStorage.getItem(CLIENT_SUPABASE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed?.url && parsed?.anonKey) return parsed;
+      }
+    }
+    const metaEnv = typeof import.meta !== "undefined" ? (import.meta as any).env : undefined;
+    if (metaEnv) {
+      const url = metaEnv.VITE_SUPABASE_URL;
+      const anonKey = metaEnv.VITE_SUPABASE_ANON_KEY;
+      if (url && anonKey && !url.includes("your-project")) {
+        return { url, anonKey };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+export function saveClientSupabaseConfig(config: ClientSupabaseConfig | null): void {
+  try {
+    if (typeof localStorage !== "undefined") {
+      if (config) {
+        localStorage.setItem(CLIENT_SUPABASE_KEY, JSON.stringify(config));
+      } else {
+        localStorage.removeItem(CLIENT_SUPABASE_KEY);
+      }
+    }
+  } catch {}
+}
+
 const INITIAL_DEMO_TASKS = [
   {
     id: 1,
@@ -438,12 +478,38 @@ function saveStoredClientTasks(tasks: any[]): void {
   } catch {}
 }
 
-function handleStaticFallback(url: string, method: string, bodyStr?: string): any {
+async function handleStaticFallback(url: string, method: string, bodyStr?: string): Promise<any> {
   const cleanPath = url.replace(/^[a-z]+:\/\/[^/]+/i, "").replace(/[?#].*$/, "");
   const searchParams = new URL(url, "https://local.mock").searchParams;
+  const sbConfig = getClientSupabaseConfig();
 
   if (cleanPath.endsWith("/api/health")) {
     return { status: "ok" };
+  }
+
+  if (cleanPath.endsWith("/api/db-status")) {
+    if (sbConfig) {
+      return {
+        activeDatabase: "Supabase (Nube)",
+        isSupabase: true,
+        isPartial: false,
+        diagnostics: {
+          message: "Conectado a la base de datos Supabase.",
+          isReady: true,
+          urlIsPlaceholder: false,
+        },
+      };
+    }
+    return {
+      activeDatabase: "En memoria (Local)",
+      isSupabase: false,
+      isPartial: false,
+      diagnostics: {
+        message: "Operando localmente. Conecta Supabase para guardar tus tareas en la nube.",
+        isReady: false,
+        urlIsPlaceholder: false,
+      },
+    };
   }
 
   if (cleanPath.endsWith("/api/auth/login") && method === "POST") {
@@ -483,6 +549,112 @@ function handleStaticFallback(url: string, method: string, bodyStr?: string): an
     const tasks = getStoredClientTasks();
     const idMatch = cleanPath.match(/\/api\/tasks\/(\d+)/);
 
+    // If Supabase is configured, use its REST API directly
+    if (sbConfig) {
+      const cleanUrl = sbConfig.url.replace(/\/+$/, "");
+      const headers = {
+        apikey: sbConfig.anonKey,
+        Authorization: `Bearer ${sbConfig.anonKey}`,
+        "Content-Type": "application/json",
+      };
+
+      try {
+        if (idMatch) {
+          const taskId = Number(idMatch[1]);
+          if (method === "PATCH") {
+            const updateData = bodyStr ? JSON.parse(bodyStr) : {};
+            const patchBody: any = {};
+            if (updateData.title !== undefined) patchBody.title = updateData.title;
+            if (updateData.description !== undefined) patchBody.description = updateData.description;
+            if (updateData.course !== undefined) patchBody.course = updateData.course;
+            if (updateData.dueAt !== undefined) patchBody.due_at = updateData.dueAt;
+            patchBody.updated_at = new Date().toISOString();
+
+            const res = await fetch(`${cleanUrl}/rest/v1/tasks?id=eq.${taskId}`, {
+              method: "PATCH",
+              headers: { ...headers, Prefer: "return=representation" },
+              body: JSON.stringify(patchBody),
+            });
+            if (res.ok) {
+              const [updated] = await res.json();
+              if (updated) {
+                return {
+                  id: updated.id,
+                  course: updated.course,
+                  title: updated.title,
+                  description: updated.description || "",
+                  dueAt: updated.due_at,
+                  createdAt: updated.created_at,
+                  updatedAt: updated.updated_at,
+                };
+              }
+            }
+          }
+          if (method === "DELETE") {
+            const res = await fetch(`${cleanUrl}/rest/v1/tasks?id=eq.${taskId}`, {
+              method: "DELETE",
+              headers,
+            });
+            if (res.ok) {
+              return { id: taskId };
+            }
+          }
+        }
+
+        if (method === "GET") {
+          const courseFilter = searchParams.get("course");
+          let endpoint = `${cleanUrl}/rest/v1/tasks?select=*&order=due_at.asc`;
+          if (courseFilter) {
+            endpoint += `&course=eq.${courseFilter}`;
+          }
+          const res = await fetch(endpoint, { headers });
+          if (res.ok) {
+            const rows = await res.json();
+            return rows.map((r: any) => ({
+              id: r.id,
+              course: r.course,
+              title: r.title,
+              description: r.description || "",
+              dueAt: r.due_at,
+              createdAt: r.created_at,
+              updatedAt: r.updated_at,
+            }));
+          }
+        }
+
+        if (method === "POST") {
+          const newTask = bodyStr ? JSON.parse(bodyStr) : {};
+          const res = await fetch(`${cleanUrl}/rest/v1/tasks`, {
+            method: "POST",
+            headers: { ...headers, Prefer: "return=representation" },
+            body: JSON.stringify({
+              course: newTask.course,
+              title: newTask.title,
+              description: newTask.description || "",
+              due_at: newTask.dueAt,
+            }),
+          });
+          if (res.ok) {
+            const [created] = await res.json();
+            if (created) {
+              return {
+                id: created.id,
+                course: created.course,
+                title: created.title,
+                description: created.description || "",
+                dueAt: created.due_at,
+                createdAt: created.created_at,
+                updatedAt: created.updated_at,
+              };
+            }
+          }
+        }
+      } catch (sbErr) {
+        console.warn("[Tareas] Error communicating with Supabase, using local fallback:", sbErr);
+      }
+    }
+
+    // Local Storage Fallback
     if (idMatch) {
       const taskId = Number(idMatch[1]);
       if (method === "PATCH") {

@@ -21,8 +21,10 @@ import {
   X,
 } from 'lucide-react';
 import {
+  getClientSupabaseConfig,
   getGetCurrentSessionQueryKey,
   getListTasksQueryKey,
+  saveClientSupabaseConfig,
   setAuthTokenGetter,
   useCreateTask,
   useDeleteTask,
@@ -589,6 +591,10 @@ function TeacherPage() {
   const [taskToDelete, setTaskToDelete] = useState<Task | null>(null);
   const [supabaseModalOpen, setSupabaseModalOpen] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
+  const [sbUrlInput, setSbUrlInput] = useState(() => getClientSupabaseConfig()?.url ?? '');
+  const [sbAnonKeyInput, setSbAnonKeyInput] = useState(() => getClientSupabaseConfig()?.anonKey ?? '');
+  const [sbStatusMsg, setSbStatusMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [testingSb, setTestingSb] = useState(false);
 
   const dbStatusQuery = useQuery({
     queryKey: ['db-status'],
@@ -634,6 +640,54 @@ function TeacherPage() {
   const openNew = () => { setEditingTask(null); setFormOpen(true); };
   const openEdit = (task: Task) => { setEditingTask(task); setFormOpen(true); };
   const closeForm = () => { setFormOpen(false); setEditingTask(null); };
+
+  const handleSaveSupabase = async () => {
+    const url = sbUrlInput.trim();
+    const anonKey = sbAnonKeyInput.trim();
+    if (!url || !anonKey) {
+      setSbStatusMsg({ type: 'error', text: 'Por favor ingresa la Project URL y la Anon Key de Supabase.' });
+      return;
+    }
+    setTestingSb(true);
+    setSbStatusMsg(null);
+    try {
+      const cleanUrl = url.replace(/\/+$/, '');
+      const testRes = await fetch(`${cleanUrl}/rest/v1/tasks?select=id&limit=1`, {
+        headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` },
+      });
+      if (!testRes.ok) {
+        if (testRes.status === 404 || testRes.status === 400) {
+          saveClientSupabaseConfig({ url: cleanUrl, anonKey });
+          setSbStatusMsg({
+            type: 'info',
+            text: 'Conectó a Supabase, pero la tabla "tasks" aún no existe. Copia y ejecuta el script SQL que está abajo en tu SQL Editor.',
+          });
+          client.invalidateQueries({ queryKey: ['db-status'] });
+          invalidate();
+          return;
+        }
+        throw new Error(`Error HTTP ${testRes.status} (${testRes.statusText})`);
+      }
+      saveClientSupabaseConfig({ url: cleanUrl, anonKey });
+      setSbStatusMsg({ type: 'success', text: '¡Conectado exitosamente con tu base de datos Supabase en la nube!' });
+      client.invalidateQueries({ queryKey: ['db-status'] });
+      invalidate();
+    } catch (err: any) {
+      setSbStatusMsg({ type: 'error', text: `No se pudo conectar: ${err?.message || 'Verifica la URL y la Anon Key'}` });
+    } finally {
+      setTestingSb(false);
+    }
+  };
+
+  const handleDisconnectSupabase = () => {
+    saveClientSupabaseConfig(null);
+    setSbUrlInput('');
+    setSbAnonKeyInput('');
+    setSbStatusMsg({ type: 'info', text: 'Supabase desconectado. Usando almacenamiento local.' });
+    client.invalidateQueries({ queryKey: ['db-status'] });
+    invalidate();
+  };
+
   const submitTask = (input: TaskInput) => {
     if (editingTask) {
       updateTask.mutate({ id: editingTask.id, data: input }, { onSuccess: () => { invalidate(); closeForm(); } });
@@ -763,31 +817,99 @@ function TeacherPage() {
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '16px', fontSize: '14px' }}>
-              {dbStatusQuery.data?.diagnostics?.urlIsPlaceholder && (
-                <div style={{ background: 'hsl(var(--destructive) / 0.12)', border: '1px solid hsl(var(--destructive) / 0.3)', borderRadius: '8px', padding: '12px 14px', color: 'hsl(var(--destructive))' }}>
-                  <p style={{ fontWeight: 600, margin: '0 0 4px 0' }}>⚠️ SUPABASE_URL necesita tu URL real</p>
-                  <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.4' }}>
-                    En Settings &gt; Secrets pusiste <code>https://your-project.supabase.co</code>. Reemplaza <code>your-project</code> por la URL única de tu proyecto en Supabase (ejemplo: <code>https://abcdefghijkl.supabase.co</code>).
-                  </p>
-                </div>
-              )}
+              {/* Sección 1: Conexión directa en la aplicación */}
               <div style={{ background: 'hsl(var(--muted) / 0.45)', padding: '14px', borderRadius: '8px', border: '1px solid hsl(var(--border))' }}>
-                <p style={{ fontWeight: 600, margin: '0 0 6px 0' }}>1. Configura tus credenciales en el Menú Settings &gt; Secrets</p>
-                <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: 'hsl(var(--muted-foreground))' }}>
-                  Añade estas dos variables de entorno en la configuración de la aplicación:
+                <p style={{ fontWeight: 600, margin: '0 0 6px 0' }}>1. Conectar tu proyecto de Supabase</p>
+                <p style={{ margin: '0 0 10px 0', fontSize: '13px', color: 'hsl(var(--muted-foreground))' }}>
+                  Ingresa las credenciales de tu proyecto de Supabase (las encuentras en <strong>Project Settings &gt; API</strong>):
                 </p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                  <div>
-                    <code style={{ background: 'hsl(var(--background))', padding: '2px 6px', borderRadius: '4px', border: '1px solid hsl(var(--border))' }}>SUPABASE_URL</code>
-                    <span style={{ color: 'hsl(var(--muted-foreground))', marginLeft: '8px' }}>URL de tu proyecto (ej. https://xxxx.supabase.co)</span>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div className="form-row" style={{ margin: 0 }}>
+                    <label className="field-label" htmlFor="supabase-url" style={{ fontSize: '12px' }}>
+                      Project URL
+                    </label>
+                    <input
+                      id="supabase-url"
+                      className="field"
+                      style={{ fontSize: '13px', padding: '6px 10px', height: '36px' }}
+                      value={sbUrlInput}
+                      onChange={(e) => setSbUrlInput(e.target.value)}
+                      placeholder="https://xxxxxxxxxxxx.supabase.co"
+                      data-testid="input-supabase-url"
+                    />
                   </div>
-                  <div>
-                    <code style={{ background: 'hsl(var(--background))', padding: '2px 6px', borderRadius: '4px', border: '1px solid hsl(var(--border))' }}>SUPABASE_SERVICE_ROLE_KEY</code>
-                    <span style={{ color: 'hsl(var(--muted-foreground))', marginLeft: '8px' }}>Clave de servicio (Service Role Key) de Supabase</span>
+
+                  <div className="form-row" style={{ margin: 0 }}>
+                    <label className="field-label" htmlFor="supabase-anon-key" style={{ fontSize: '12px' }}>
+                      API Key pública (anon key)
+                    </label>
+                    <input
+                      id="supabase-anon-key"
+                      className="field"
+                      type="password"
+                      style={{ fontSize: '13px', padding: '6px 10px', height: '36px' }}
+                      value={sbAnonKeyInput}
+                      onChange={(e) => setSbAnonKeyInput(e.target.value)}
+                      placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
+                      data-testid="input-supabase-key"
+                    />
+                  </div>
+
+                  {sbStatusMsg && (
+                    <div
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        fontSize: '13px',
+                        lineHeight: '1.4',
+                        background:
+                          sbStatusMsg.type === 'success'
+                            ? 'hsl(142 76% 36% / 0.15)'
+                            : sbStatusMsg.type === 'error'
+                            ? 'hsl(var(--destructive) / 0.15)'
+                            : 'hsl(217 91% 60% / 0.15)',
+                        color:
+                          sbStatusMsg.type === 'success'
+                            ? 'hsl(142 76% 36%)'
+                            : sbStatusMsg.type === 'error'
+                            ? 'hsl(var(--destructive))'
+                            : 'hsl(217 91% 60%)',
+                        border: '1px solid currentColor',
+                      }}
+                      data-testid="status-supabase-message"
+                    >
+                      {sbStatusMsg.text}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      style={{ height: '34px', fontSize: '13px', padding: '0 14px' }}
+                      disabled={testingSb}
+                      onClick={handleSaveSupabase}
+                      data-testid="button-connect-supabase"
+                    >
+                      {testingSb ? 'Comprobando conexión…' : 'Conectar y Guardar'}
+                    </button>
+                    {(Boolean(sbUrlInput) || dbStatusQuery.data?.isSupabase) && (
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        style={{ height: '34px', fontSize: '13px', padding: '0 12px' }}
+                        onClick={handleDisconnectSupabase}
+                        data-testid="button-disconnect-supabase"
+                      >
+                        Desconectar
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
 
+              {/* Sección 2: Script SQL */}
               <div style={{ background: 'hsl(var(--muted) / 0.45)', padding: '14px', borderRadius: '8px', border: '1px solid hsl(var(--border))' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                   <p style={{ fontWeight: 600, margin: 0 }}>2. Crear la tabla en Supabase SQL Editor</p>
@@ -809,7 +931,7 @@ function TeacherPage() {
                   </button>
                 </div>
                 <p style={{ margin: '0 0 8px 0', fontSize: '13px', color: 'hsl(var(--muted-foreground))' }}>
-                  Copia y ejecuta este script en <strong>Supabase &gt; SQL Editor &gt; New Query &gt; Run</strong>:
+                  Copia y ejecuta este script en <strong>Supabase &gt; SQL Editor &gt; New Query &gt; Run</strong> para crear la tabla de tareas:
                 </p>
                 <pre
                   style={{
@@ -820,7 +942,7 @@ function TeacherPage() {
                     fontSize: '12px',
                     overflowX: 'auto',
                     fontFamily: 'monospace',
-                    maxHeight: '130px',
+                    maxHeight: '120px',
                     margin: 0,
                     lineHeight: '1.4',
                   }}
