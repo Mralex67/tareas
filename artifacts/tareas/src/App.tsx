@@ -24,6 +24,7 @@ import {
   getClientSupabaseConfig,
   getGetCurrentSessionQueryKey,
   getListTasksQueryKey,
+  normalizeSupabaseUrl,
   saveClientSupabaseConfig,
   setAuthTokenGetter,
   useCreateTask,
@@ -577,8 +578,14 @@ create table if not exists public.tasks (
 create index if not exists tasks_course_due_at_idx
   on public.tasks (course, due_at);
 
--- Habilitar permisos de lectura y escritura
-alter table public.tasks disable row level security;`;
+-- Activar RLS con permisos abiertos para la app (se muestra en verde en Supabase)
+alter table public.tasks enable row level security;
+
+drop policy if exists "Permitir acceso web anonimo" on public.tasks;
+create policy "Permitir acceso web anonimo"
+  on public.tasks for all
+  using (true)
+  with check (true);`;
 
 function TeacherPage() {
   const [, setLocation] = useLocation();
@@ -642,32 +649,49 @@ function TeacherPage() {
   const closeForm = () => { setFormOpen(false); setEditingTask(null); };
 
   const handleSaveSupabase = async () => {
-    const url = sbUrlInput.trim();
+    let url = sbUrlInput.trim();
     const anonKey = sbAnonKeyInput.trim();
     if (!url || !anonKey) {
       setSbStatusMsg({ type: 'error', text: 'Por favor ingresa la Project URL y la Anon Key de Supabase.' });
       return;
     }
+
+    const cleanUrl = normalizeSupabaseUrl(url);
+    setSbUrlInput(cleanUrl);
+
     setTestingSb(true);
     setSbStatusMsg(null);
     try {
-      const cleanUrl = url.replace(/\/+$/, '');
       const testRes = await fetch(`${cleanUrl}/rest/v1/tasks?select=id&limit=1`, {
         headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` },
       });
       if (!testRes.ok) {
-        if (testRes.status === 404 || testRes.status === 400) {
+        let detail = '';
+        try {
+          const json = await testRes.json();
+          detail = json.message || json.hint || JSON.stringify(json);
+        } catch {
+          detail = await testRes.text().catch(() => '');
+        }
+
+        if (testRes.status === 401 || testRes.status === 403) {
+          throw new Error(`La Anon Key fue rechazada (Error ${testRes.status}). Asegúrate de copiar la clave 'anon' 'public' en Project Settings > API.`);
+        }
+
+        if (testRes.status === 404 && detail.toLowerCase().includes('tasks')) {
           saveClientSupabaseConfig({ url: cleanUrl, anonKey });
           setSbStatusMsg({
             type: 'info',
-            text: 'Conectó a Supabase, pero la tabla "tasks" aún no existe. Copia y ejecuta el script SQL que está abajo en tu SQL Editor.',
+            text: 'Conectó a Supabase. Como la tabla se acaba de crear, el caché de la API puede tardar unos segundos. Espera un momento y presiona "Conectar y Guardar" de nuevo.',
           });
           client.invalidateQueries({ queryKey: ['db-status'] });
           invalidate();
           return;
         }
-        throw new Error(`Error HTTP ${testRes.status} (${testRes.statusText})`);
+
+        throw new Error(`Error ${testRes.status}: ${detail || testRes.statusText}`);
       }
+
       saveClientSupabaseConfig({ url: cleanUrl, anonKey });
       setSbStatusMsg({ type: 'success', text: '¡Conectado exitosamente con tu base de datos Supabase en la nube!' });
       client.invalidateQueries({ queryKey: ['db-status'] });

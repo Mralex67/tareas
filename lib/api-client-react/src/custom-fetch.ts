@@ -390,13 +390,27 @@ export interface ClientSupabaseConfig {
   anonKey: string;
 }
 
+export function normalizeSupabaseUrl(rawUrl: string): string {
+  let u = (rawUrl || '').trim().replace(/\/+$/, '');
+  const matchDashboard = u.match(/supabase\.com\/dashboard\/project\/([a-z0-9_-]+)/i);
+  if (matchDashboard) {
+    return `https://${matchDashboard[1]}.supabase.co`;
+  }
+  if (u && !u.startsWith('http://') && !u.startsWith('https://')) {
+    u = `https://${u}`;
+  }
+  return u;
+}
+
 export function getClientSupabaseConfig(): ClientSupabaseConfig | null {
   try {
     if (typeof localStorage !== "undefined") {
       const stored = localStorage.getItem(CLIENT_SUPABASE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
-        if (parsed?.url && parsed?.anonKey) return parsed;
+        if (parsed?.url && parsed?.anonKey) {
+          return { url: normalizeSupabaseUrl(parsed.url), anonKey: parsed.anonKey };
+        }
       }
     }
     const metaEnv = typeof import.meta !== "undefined" ? (import.meta as any).env : undefined;
@@ -404,7 +418,7 @@ export function getClientSupabaseConfig(): ClientSupabaseConfig | null {
       const url = metaEnv.VITE_SUPABASE_URL;
       const anonKey = metaEnv.VITE_SUPABASE_ANON_KEY;
       if (url && anonKey && !url.includes("your-project")) {
-        return { url, anonKey };
+        return { url: normalizeSupabaseUrl(url), anonKey };
       }
     }
   } catch {}
@@ -415,7 +429,10 @@ export function saveClientSupabaseConfig(config: ClientSupabaseConfig | null): v
   try {
     if (typeof localStorage !== "undefined") {
       if (config) {
-        localStorage.setItem(CLIENT_SUPABASE_KEY, JSON.stringify(config));
+        localStorage.setItem(CLIENT_SUPABASE_KEY, JSON.stringify({
+          url: normalizeSupabaseUrl(config.url),
+          anonKey: config.anonKey.trim(),
+        }));
       } else {
         localStorage.removeItem(CLIENT_SUPABASE_KEY);
       }
