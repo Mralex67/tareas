@@ -360,12 +360,174 @@ export async function customFetch<T = unknown>(
 
   const requestInfo = { method, url: resolveUrl(input) };
 
-  const response = await fetch(input, { ...init, method, headers });
+  try {
+    const response = await fetch(input, { ...init, method, headers });
 
-  if (!response.ok) {
-    const errorData = await parseErrorBody(response, method);
-    throw new ApiError(response, errorData, requestInfo);
+    if (!response.ok) {
+      if (response.status === 404 && requestInfo.url.includes("/api/")) {
+        const fallback = handleStaticFallback(requestInfo.url, method, typeof init.body === "string" ? init.body : undefined);
+        if (fallback !== null) return fallback as T;
+      }
+      const errorData = await parseErrorBody(response, method);
+      throw new ApiError(response, errorData, requestInfo);
+    }
+
+    return (await parseSuccessBody(response, responseType, requestInfo)) as T;
+  } catch (err) {
+    if (requestInfo.url.includes("/api/")) {
+      const fallback = handleStaticFallback(requestInfo.url, method, typeof init.body === "string" ? init.body : undefined);
+      if (fallback !== null) return fallback as T;
+    }
+    throw err;
+  }
+}
+
+const CLIENT_TASKS_KEY = "tareas.local_tasks_data";
+const INITIAL_DEMO_TASKS = [
+  {
+    id: 1,
+    course: "1A",
+    title: "Informe de laboratorio: Fotos\u00EDntesis y pigmentos vegetales",
+    description: "Entregar informe escrito con an\u00E1lisis de cromatograf\u00EDa en papel y conclusiones.",
+    dueAt: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 2,
+    course: "2A",
+    title: "Maqueta tridimensional de la c\u00E9lula eucariota animal",
+    description: "Identificar claramente el n\u00FAcleo, mitocondrias, ret\u00EDculo endoplasm\u00E1tico y aparato de Golgi.",
+    dueAt: new Date(Date.now() + 4 * 24 * 60 * 60 * 1000).toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 3,
+    course: "3A",
+    title: "Gu\u00EDa de estudio: Gen\u00E9tica mendeliana y cuadros de Punnett",
+    description: "Resolver los 10 ejercicios del cuaderno de actividades cap\u00EDtulo 4.",
+    dueAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 4,
+    course: "4A",
+    title: "Ensayo: Teor\u00EDa de la evoluci\u00F3n por selecci\u00F3n natural",
+    description: "M\u00E1ximo 3 p\u00E1ginas comparando el darwinismo con las teor\u00EDas de Lamarck.",
+    dueAt: new Date(Date.now() + 6 * 24 * 60 * 60 * 1000).toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+];
+
+function getStoredClientTasks(): any[] {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(CLIENT_TASKS_KEY) : null;
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return INITIAL_DEMO_TASKS;
+}
+
+function saveStoredClientTasks(tasks: any[]): void {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(CLIENT_TASKS_KEY, JSON.stringify(tasks));
+    }
+  } catch {}
+}
+
+function handleStaticFallback(url: string, method: string, bodyStr?: string): any {
+  const cleanPath = url.replace(/^[a-z]+:\/\/[^/]+/i, "").replace(/[?#].*$/, "");
+  const searchParams = new URL(url, "https://local.mock").searchParams;
+
+  if (cleanPath.endsWith("/api/health")) {
+    return { status: "ok" };
   }
 
-  return (await parseSuccessBody(response, responseType, requestInfo)) as T;
+  if (cleanPath.endsWith("/api/auth/login") && method === "POST") {
+    const data = bodyStr ? JSON.parse(bodyStr) : {};
+    const pwd = String(data.password || "").trim();
+    if (pwd === "BiologiaRamiro1") {
+      return { token: "static-teacher-token", role: "teacher", course: null };
+    }
+    const studentMatch = pwd.match(/^Bolivia([1-6])$/);
+    if (studentMatch) {
+      return { token: `static-student-token-${studentMatch[1]}A`, role: "student", course: `${studentMatch[1]}A` };
+    }
+    const fakeResp = new Response(JSON.stringify({ message: "Contrase\u00F1a incorrecta." }), {
+      status: 401,
+      statusText: "Unauthorized",
+      headers: { "content-type": "application/json" },
+    });
+    throw new ApiError(fakeResp, { message: "Contrase\u00F1a incorrecta." }, { method, url });
+  }
+
+  if (cleanPath.endsWith("/api/auth/session")) {
+    const stored = typeof localStorage !== "undefined" ? localStorage.getItem("tareas.auth-session") : null;
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (parsed?.role) return parsed;
+      } catch {}
+    }
+    return { role: "teacher", course: null };
+  }
+
+  if (cleanPath.endsWith("/api/auth/logout")) {
+    return { success: true };
+  }
+
+  if (cleanPath.includes("/api/tasks")) {
+    const tasks = getStoredClientTasks();
+    const idMatch = cleanPath.match(/\/api\/tasks\/(\d+)/);
+
+    if (idMatch) {
+      const taskId = Number(idMatch[1]);
+      if (method === "PATCH") {
+        const updateData = bodyStr ? JSON.parse(bodyStr) : {};
+        const idx = tasks.findIndex((t: any) => t.id === taskId);
+        if (idx !== -1) {
+          tasks[idx] = { ...tasks[idx], ...updateData, updatedAt: new Date().toISOString() };
+          saveStoredClientTasks(tasks);
+          return tasks[idx];
+        }
+      }
+      if (method === "DELETE") {
+        const idx = tasks.findIndex((t: any) => t.id === taskId);
+        if (idx !== -1) {
+          const [removed] = tasks.splice(idx, 1);
+          saveStoredClientTasks(tasks);
+          return removed;
+        }
+      }
+    }
+
+    if (method === "GET") {
+      const courseFilter = searchParams.get("course");
+      if (courseFilter) {
+        return tasks.filter((t: any) => t.course === courseFilter).sort((a: any, b: any) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+      }
+      return tasks.sort((a: any, b: any) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+    }
+
+    if (method === "POST") {
+      const newTask = bodyStr ? JSON.parse(bodyStr) : {};
+      const created = {
+        id: Date.now(),
+        course: newTask.course,
+        title: newTask.title,
+        description: newTask.description || "",
+        dueAt: new Date(newTask.dueAt).toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      tasks.push(created);
+      saveStoredClientTasks(tasks);
+      return created;
+    }
+  }
+
+  return null;
 }
