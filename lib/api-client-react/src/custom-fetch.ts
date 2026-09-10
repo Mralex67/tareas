@@ -396,10 +396,18 @@ export function normalizeSupabaseUrl(rawUrl: string): string {
   if (matchDashboard) {
     return `https://${matchDashboard[1]}.supabase.co`;
   }
+  const matchSupabaseCo = u.match(/(https?:\/\/[a-z0-9_-]+\.supabase\.co)/i);
+  if (matchSupabaseCo) {
+    return matchSupabaseCo[1].toLowerCase();
+  }
+  const matchBareCo = u.match(/^([a-z0-9_-]+\.supabase\.co)/i);
+  if (matchBareCo) {
+    return `https://${matchBareCo[1].toLowerCase()}`;
+  }
   if (u && !u.startsWith('http://') && !u.startsWith('https://')) {
     u = `https://${u}`;
   }
-  return u;
+  return u.replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/, '');
 }
 
 export function getClientSupabaseConfig(): ClientSupabaseConfig | null {
